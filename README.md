@@ -14,7 +14,7 @@ Powered By Rust.
 
 A powerful terminal editor based on Rust that supports mouse input
 
-The project currently only supports Linux and pure TTY interface
+The project currently only supports Linux(Windows=>WSL) and pure TTY interface
 (NOT require UNICODE font)
 
 Does not use other 3rd-party library packages
@@ -22,9 +22,6 @@ only the std std:: and libc::
 
 ![](screenshot-tty.jpeg)
 ![](screenshot.png)
-
-
-
 
 ## Usage
 
