@@ -1,154 +1,55 @@
-use std::fs::OpenOptions;
-use std::io::{stdin, stdout, Read, Write};
-use std::process::exit;
-use std::sync::mpsc;
+//! kytris - 强大的支持鼠标输入的终端编辑器
+//!
+//! 启动方法：
+//! ```
+//! ./kytris
+//! ```
+//! 
+//! 使用外部字体库(支持.bf/.bdf文件解析):\
+//!     .bf     BemlyFont                   蓝莓现代位图字体文件\
+//!     .bdf    BitmapDistributionFormat   Adobe位图字库文件(itch.io像素小游戏常用)
+//! ```
+//! ./kytris -f .bf/.bdf文件路径
+//! ./kytris --font .bf/.bdf文件路径
+//! ```
+//! 
+//! 指定绑定鼠标输入设备：
+//! ```
+//! ./kytris -k </dev/input/event*> -m </dev/input/event*>
+//! ./kytris --key </dev/input/event*> ---mouse </dev/input/event*>
+//! ```
+//! 
+//! 编译二进制文件：
+//! ```
+//! cargo run --package kytris --bin kytris
+//! ```
+mod mouse;
+mod print;
+mod keyboard;
+
+use crate::print::Position;
 use std::thread;
 
-fn set_row_cache_mode(enable: bool) {
-    let fd = libc::STDIN_FILENO;
-    unsafe {
-        let mut termios = std::mem::zeroed::<libc::termios>();
-        libc::tcgetattr(fd, &mut termios);
-        if !enable { termios.c_lflag &= !(libc::ICANON | libc::ECHO); }
-        else { termios.c_lflag |= libc::ICANON | libc::ECHO; }
-        libc::tcsetattr(fd, libc::TCSANOW, &termios);
-    }
-}
-
-# [derive(Debug)]
-struct Position(u16,u16);
-impl Position {
-    fn new(x: u16, y: u16) -> Self { Position(x, y) }
-    fn init() -> Self { Position(0, 0) }
-    fn auto_update(&mut self) {
-        print!("\x1b[6n");
-        stdout().flush().unwrap();
-        if let Some((x, y)) = self.read_cursor_position() {
-            self.0 = x;
-            self.1 = y;
-        }
-    }
-    fn read_cursor_position(&self) -> Option<(u16,u16)> { todo!() }
-    fn update(&mut self) { todo!() }
-}
+const MOUSE_EVENT_PATH: &str = "/dev/input/event7";
+const KEYBOARD_EVENT_PATH: &str = "/dev/input/event6";
 
 fn main() {
-    set_row_cache_mode(false);
-    let mut position = Position::init();
-    let mut screen = Position::init();
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let mut buffer = Vec::new();
-        for byte in stdin().bytes() {
-            match byte {
-                Ok(ascii@ b'R') => {
-                    buffer.push(ascii);
-                    tx.send(buffer).unwrap();
-                    break
-                },
-                Ok(ascii) => buffer.push(ascii),
-                Err(e) => panic!("{}", e)
-            }
-        }
+    let mouse_screen = Position::init();
+    let key_screen = mouse_screen.clone();
+
+    // 创建鼠标监听线程
+    let mouse_thread = thread::spawn(move || {
+        mouse::listener(MOUSE_EVENT_PATH, mouse_screen);
     });
 
-    print!("\x1b[3J\x1b[9999C\x1b[9999B\x1b[6n");
-    stdout().flush().unwrap();
+    // 创建键盘监听线程
+    let keyboard_thread = thread::spawn(move || {
+        keyboard::listener(KEYBOARD_EVENT_PATH, key_screen);
+    });
 
-    if let Ok(input) = rx.recv() {
-        if !input.is_ascii() { unimplemented!("Invalid input. 不正确的输入，获取坐标异常") }
-        let mut slice_symbol = 0_u8;
-        let mut x = Vec::new();
-        let mut y = Vec::new();
-        for ascii in input {
-            match ascii {
-                b'[' => slice_symbol = 1,
-                b';' => slice_symbol = 2,
-                b'R' => break,
-                Y if slice_symbol == 1 => y.push(Y),
-                X if slice_symbol == 2 => x.push(X),
-                _ => {}
-            }
-        }
+    // 等待鼠标监听线程结束
+    mouse_thread.join().unwrap();
 
-        let ascii2u16 = |acc, &ascii| acc * 10u16 + (ascii - 0x30) as u16;
-        screen.0 = x.iter().fold(0, ascii2u16);
-        screen.1 = y.iter().fold(0, ascii2u16);
-    }
-    set_row_cache_mode(true);
-
-    print!("\x1b[H");
-    stdout().flush().unwrap();
-
-    let mut file = OpenOptions::new().read(true).open("/dev/input/event7").unwrap();
-    loop {
-
-        let mut packet = [0u8; 24];
-        file.read_exact(&mut packet).unwrap();
-
-        let evtype = u16::from_ne_bytes(packet[16..18].try_into().unwrap());
-        let code = u16::from_ne_bytes(packet[18..20].try_into().unwrap());
-        let value = i32::from_ne_bytes(packet[20..].try_into().unwrap());
-
-        let mouse_key = || {
-            match code {
-                0x110_u16 => { /* BTN_LEFT */ },
-                0x111 => { /* BTN_RIGHT */ },
-                0x112 => { /* BTN_MIDDLE */ },
-                0x113 => { /* BTN_SIDE */ },
-                0x114 => { /* BTN_EXTRA */
-                    print!("\x1b[3J\x1b[H");
-                    exit(0)
-                },
-                _ => unimplemented!()
-            }
-        };
-
-        let mut mouse_wheel = || {
-            match code {
-                0 => { /* REL_X */
-                    if value < 0 { // 左
-                        if position.0 > 1 {
-                            position.0 -= 1;
-                            print!("\x1b[1D")
-                        }
-                    } else { // 右
-                        if position.0 < screen.0 {
-                            position.0 += 1;
-                            print!("\x1b[1C")
-                        }
-                    }
-                },
-                1 => { /* REL_Y */
-                    if value.abs() > 1 {
-                        if value < 0 { // 上
-                            if position.1 > 1 {
-                                position.1 -= 1;
-                                print!("\x1b[1A")
-                            }
-                        } else { // 下
-                            if position.1 < screen.1 {
-                                position.1 += 1;
-                                print!("\x1b[1B")
-                            }
-                        }
-                    }
-                },
-                8 => { /* REL_WHEEL */ },
-                11 => { /* REL_WHEEL_HI_RES */ },
-                _ => unimplemented!()
-            }
-        };
-
-        match evtype {
-            0x00_u16 => { /* EOF */ },
-            0x01 => mouse_key(),
-            0x02 => mouse_wheel(),
-            0x03 => unimplemented!(),
-            0x04 => { /* SYNC */ },
-            _ => unimplemented!()
-        }
-
-        stdout().flush().unwrap();
-    }
+    // 等待键盘监听线程结束
+    keyboard_thread.join().unwrap();
 }
